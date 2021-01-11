@@ -76,11 +76,25 @@ public class ExtensionLoader<T> {
 
     private static final Logger logger = LoggerFactory.getLogger(ExtensionLoader.class);
 
+    /**
+     *  优先级  DUBBO_INTERNAL_DIRECTORY >> DUBBO_DIRECTORY >> SERVICES_DIRECTORY
+     */
+
+    /**
+     *  java SPI默认目录
+     */
     private static final String SERVICES_DIRECTORY = "META-INF/services/";
 
+    /**
+     *  dubbo SPI默认目录
+     */
     private static final String DUBBO_DIRECTORY = "META-INF/dubbo/";
 
+    /**
+     *  dubbo internal spi目录
+     */
     private static final String DUBBO_INTERNAL_DIRECTORY = DUBBO_DIRECTORY + "internal/";
+
 
     private static final Pattern NAME_SEPARATOR = Pattern.compile("\\s*[,]+\\s*");
 
@@ -99,14 +113,19 @@ public class ExtensionLoader<T> {
     private final Map<String, Object> cachedActivates = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Holder<Object>> cachedInstances = new ConcurrentHashMap<>();
     private final Holder<Object> cachedAdaptiveInstance = new Holder<>();
+    // 缓存的adaptive 类
     private volatile Class<?> cachedAdaptiveClass = null;
+    // 缓存的默认名字，就是SPI注解中的value值
     private String cachedDefaultName;
     private volatile Throwable createAdaptiveInstanceError;
 
+    // 缓存的包装类
     private Set<Class<?>> cachedWrapperClasses;
 
     private Map<String, IllegalStateException> exceptions = new ConcurrentHashMap<>();
 
+    // if type == ExtensionFactory.class  说明 ExtensionFactory 没有对象工厂
+    // 否则，获取根据
     private ExtensionLoader(Class<?> type) {
         this.type = type;
         objectFactory = (type == ExtensionFactory.class ? null : ExtensionLoader.getExtensionLoader(ExtensionFactory.class).getAdaptiveExtension());
@@ -116,6 +135,13 @@ public class ExtensionLoader<T> {
         return type.isAnnotationPresent(SPI.class);
     }
 
+    /**
+     *  从 EXTENSION_LOADERS 中获取对应的loader
+     *  没有获取到就新建一个，放在 EXTENSION_LOADERS 中
+     * @param type
+     * @param <T>
+     * @return
+     */
     @SuppressWarnings("unchecked")
     public static <T> ExtensionLoader<T> getExtensionLoader(Class<T> type) {
         if (type == null) {
@@ -172,7 +198,9 @@ public class ExtensionLoader<T> {
         return getExtensionName(extensionInstance.getClass());
     }
 
+    // 根据class获取对应的名称
     public String getExtensionName(Class<?> extensionClass) {
+        // 加载class信息
         getExtensionClasses();// load class
         return cachedNames.get(extensionClass);
     }
@@ -541,7 +569,7 @@ public class ExtensionLoader<T> {
                         createAdaptiveInstanceError.toString(),
                         createAdaptiveInstanceError);
             }
-
+            // 双重判断
             synchronized (cachedAdaptiveInstance) {
                 instance = cachedAdaptiveInstance.get();
                 if (instance == null) {
@@ -699,9 +727,11 @@ public class ExtensionLoader<T> {
     private Map<String, Class<?>> getExtensionClasses() {
         Map<String, Class<?>> classes = cachedClasses.get();
         if (classes == null) {
+            // 双重循环判断
             synchronized (cachedClasses) {
                 classes = cachedClasses.get();
                 if (classes == null) {
+                    // 如果缓存仍然为空，需要先加载
                     classes = loadExtensionClasses();
                     cachedClasses.set(classes);
                 }
@@ -714,13 +744,16 @@ public class ExtensionLoader<T> {
      * synchronized in getExtensionClasses
      * */
     private Map<String, Class<?>> loadExtensionClasses() {
+        // @SPI 注解上的默认value值
         cacheDefaultExtensionName();
-
+        // 清空 extensionClasses
         Map<String, Class<?>> extensionClasses = new HashMap<>();
         // internal extension load from ExtensionLoader's ClassLoader first
+        // 首先加载innernal/目录下的数据
         loadDirectory(extensionClasses, DUBBO_INTERNAL_DIRECTORY, type.getName(), true);
+        // 替换目录，需要加载com.alibaba下的文件
         loadDirectory(extensionClasses, DUBBO_INTERNAL_DIRECTORY, type.getName().replace("org.apache", "com.alibaba"), true);
-
+        // 后续同理
         loadDirectory(extensionClasses, DUBBO_DIRECTORY, type.getName());
         loadDirectory(extensionClasses, DUBBO_DIRECTORY, type.getName().replace("org.apache", "com.alibaba"));
         loadDirectory(extensionClasses, SERVICES_DIRECTORY, type.getName());
@@ -730,6 +763,7 @@ public class ExtensionLoader<T> {
 
     /**
      * extract and cache default extension name if exists
+     * // 缓存默认信息
      */
     private void cacheDefaultExtensionName() {
         final SPI defaultAnnotation = type.getAnnotation(SPI.class);
@@ -737,9 +771,11 @@ public class ExtensionLoader<T> {
             return;
         }
 
+        // 获取默认的value值
         String value = defaultAnnotation.value();
         if ((value = value.trim()).length() > 0) {
             String[] names = NAME_SEPARATOR.split(value);
+            // 不允许超过1个默认值
             if (names.length > 1) {
                 throw new IllegalStateException("More than 1 default extension name on extension " + type.getName()
                         + ": " + Arrays.toString(names));
@@ -754,7 +790,15 @@ public class ExtensionLoader<T> {
         loadDirectory(extensionClasses, dir, type, false);
     }
 
+    /**
+     * 读取文件
+     * @param extensionClasses 缓存容器
+     * @param dir  指定目录
+     * @param type class名称 类名
+     * @param extensionLoaderClassLoaderFirst  是否使用ExtensionLoader的类加载器进行加载
+     */
     private void loadDirectory(Map<String, Class<?>> extensionClasses, String dir, String type, boolean extensionLoaderClassLoaderFirst) {
+        // 文件名=目录+类名
         String fileName = dir + type;
         try {
             Enumeration<java.net.URL> urls = null;
@@ -763,11 +807,13 @@ public class ExtensionLoader<T> {
             // try to load from ExtensionLoader's ClassLoader first
             if (extensionLoaderClassLoaderFirst) {
                 ClassLoader extensionLoaderClassLoader = ExtensionLoader.class.getClassLoader();
+                // 不一致的情况下 用新的加载器加载url内容信息
                 if (ClassLoader.getSystemClassLoader() != extensionLoaderClassLoader) {
                     urls = extensionLoaderClassLoader.getResources(fileName);
                 }
             }
-            
+
+            // 获取urls集合
             if(urls == null || !urls.hasMoreElements()) {
                 if (classLoader != null) {
                     urls = classLoader.getResources(fileName);
@@ -777,6 +823,7 @@ public class ExtensionLoader<T> {
             }
 
             if (urls != null) {
+                // 不为空，开始遍历，加载资源
                 while (urls.hasMoreElements()) {
                     java.net.URL resourceURL = urls.nextElement();
                     loadResource(extensionClasses, classLoader, resourceURL);
@@ -828,24 +875,33 @@ public class ExtensionLoader<T> {
                     type + ", class line: " + clazz.getName() + "), class "
                     + clazz.getName() + " is not subtype of interface.");
         }
+
+        // 如果有Adaptive 注解
         if (clazz.isAnnotationPresent(Adaptive.class)) {
+            // 设置 cachedAdaptiveClass
             cacheAdaptiveClass(clazz);
-        } else if (isWrapperClass(clazz)) {
+        } else if (isWrapperClass(clazz)) {// 如果是包装类 加到cachedWrapperClasses这个Map中
             cacheWrapperClass(clazz);
         } else {
+            // 其他情况，
             clazz.getConstructor();
             if (StringUtils.isEmpty(name)) {
+                // 根据class获取注解信息
                 name = findAnnotationName(clazz);
                 if (name.length() == 0) {
                     throw new IllegalStateException("No such extension name for the class " + clazz.getName() + " in the config " + resourceURL);
                 }
             }
 
+            // 分割
             String[] names = NAME_SEPARATOR.split(name);
             if (ArrayUtils.isNotEmpty(names)) {
+                // 缓存到 cachedActivates 这个map中
                 cacheActivateClass(clazz, names[0]);
                 for (String n : names) {
+                    // 遍历 缓存names Map
                     cacheName(clazz, n);
+                    // 保存到extensionClasses中
                     saveInExtensionClass(extensionClasses, clazz, n);
                 }
             }
